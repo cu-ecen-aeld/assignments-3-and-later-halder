@@ -19,9 +19,11 @@ void test_validate_my_username()
      * config file and my_username() functions are setup properly
      */
     	const char *hardcoded_username;
-	const char *conf_username;
+	char *conf_username;
 	hardcoded_username = my_username();
 	conf_username = malloc_username_from_conf_file();
 
 	TEST_ASSERT_EQUAL_STRING_MESSAGE(hardcoded_username, conf_username, "usernames do not match.");
+
+	free(conf_username);
 }
