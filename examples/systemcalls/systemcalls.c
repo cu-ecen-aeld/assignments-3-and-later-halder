@@ -1,4 +1,8 @@
 #include "systemcalls.h"
+#include <unistd.h>
+#include <fcntl.h>
+#include <stdlib.h>
+#include <sys/wait.h>
 
 /**
  * @param cmd the command to execute with system()
@@ -16,6 +20,19 @@ bool do_system(const char *cmd)
  *   and return a boolean true if the system() call completed with success
  *   or false() if it returned a failure
 */
+    int ret_sys = system(cmd);
+
+    if (cmd == NULL && ret_sys == 0)
+    {
+	printf("No shell available.");
+	return false;
+    } else if (ret_sys == -1) {
+    	printf("Could not create child process.");
+	return false;
+    } else if (ret_sys == 127) {
+    	printf("Shell could not be executed in the child process.");
+	return false;
+    }
 
     return true;
 }
@@ -58,6 +75,31 @@ bool do_exec(int count, ...)
  *   as second argument to the execv() command.
  *
 */
+    if (command[0][0] != '/') { // must be absolute path according to tests
+	printf("Command (first argument) must be specified using absolute path!");
+	return false;
+    }
+    pid_t child_pid = fork();
+    if (child_pid == -1) {
+    	printf("No child process could be created.");
+	return false;
+    } else if (child_pid == 0) { // child process
+	int exec_error = execv(command[0], command);
+	if (exec_error) {
+		printf("could not execute command.");
+		return false;
+	}
+    } else { // parent process -> wait
+	int wstatus;
+	wait(&wstatus);
+
+	if (wstatus == -1) {
+		printf("Failure in child process.");
+		return false;
+	} else if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) != 0) {
+		return false;
+	}
+    }
 
     va_end(args);
 
@@ -92,6 +134,39 @@ bool do_exec_redirect(const char *outputfile, int count, ...)
  *   The rest of the behaviour is same as do_exec()
  *
 */
+    if (command[0][0] != '/') {
+	printf("need absolute path here!");
+	return false;
+    }
+    
+    int fd = open(outputfile, O_WRONLY|O_TRUNC|O_CREAT, 0644);
+    
+    pid_t child_pid = fork();
+    if (child_pid == -1) {
+    	printf("No child process could be created.");
+	return false;
+    } else if (child_pid == 0) { // child process
+	if (dup2(fd, 1) < 0) {
+		printf("Error duplicating file descriptor.");
+		return false;
+	}
+    	int exec_error = execv(command[0], command);
+	if (exec_error) {
+		printf("could not execute command in child.");
+		close(fd);
+		return false;
+	}
+    } else {
+	int wstatus;
+	wait(&wstatus);
+
+	if (wstatus == -1) {
+		printf("Failure in child process.");
+		return false;
+	} else if (WIFEXITED(wstatus) && WEXITSTATUS(wstatus) != 0) {
+		return false;
+	}
+    }
 
     va_end(args);
 
