@@ -15,7 +15,7 @@ void* threadfunc(void* thread_param)
     // hint: use a cast like the one below to obtain thread arguments from your parameter
     struct thread_data* thread_func_args = (struct thread_data *) thread_param;
     
-    usleep(thread_func_args->wait_to_obtain_ms);
+    usleep(thread_func_args->wait_to_obtain_ms * 1000);
 
     int rc = pthread_mutex_lock(thread_func_args->mutex);
     if (rc != 0) 
@@ -23,7 +23,7 @@ void* threadfunc(void* thread_param)
         printf("pthread_mutex_lock failed with %d\n", rc);
     } 
 
-    usleep(thread_func_args->wait_to_release_ms);
+    usleep(thread_func_args->wait_to_release_ms * 1000);
 
     rc = pthread_mutex_unlock(thread_func_args->mutex);
     if (rc != 0) 
@@ -55,7 +55,7 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
 	thread_array->wait_to_release_ms = wait_to_release_ms;
 	thread_array->wait_to_obtain_ms = wait_to_obtain_ms;
 
-	int rc = pthread_create(thread, NULL, threadfunc, &thread_array);
+	int rc = pthread_create(thread, NULL, threadfunc, (void *) thread_array);
     if (rc != 0) 
     {
         printf("pthread_create failed with %d\n", rc);
@@ -63,7 +63,7 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
    
 	if (thread_array->thread_complete_success)
 	{
-		free(thread_array);
+		//free(thread_array);
 		return true;
 	}
 	free(thread_array);
