@@ -14,6 +14,6 @@ fi
 # only file types
 num_files=$(find $filesdir/ -type f | wc -l)
 # skip subdirectories
-num_lines=$(grep -r -d skip $searchstr $filesdir/* | wc -l)
+num_lines=$(grep -r $searchstr $filesdir/* | wc -l)
 
 echo "The number of files are $num_files and the number of matching lines are $num_lines"

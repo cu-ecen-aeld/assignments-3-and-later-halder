@@ -37,13 +37,12 @@ if [ ! -e ${OUTDIR}/linux-stable/arch/${ARCH}/boot/Image ]; then
 
     # TODO: Add your kernel build steps here
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} mrproper
-    echo "trying defconfig"
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
-    echo "success"
     make -j4 ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} all
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} modules
     make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} dtbs
-
+    
+    cp arch/${ARCH}/boot/Image ${OUTDIR}/Image
 fi
 
 echo "Adding the Image in outdir"
@@ -69,8 +68,8 @@ git clone git://busybox.net/busybox.git
     cd busybox
     git checkout ${BUSYBOX_VERSION}
     # TODO:  Configure busybox
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} distclean
-    make ARCH=${ARCH} CROSS_COMPILE=${CROSS_COMPILE} defconfig
+    make distclean
+    make defconfig
 
 else
     cd busybox
@@ -92,7 +91,7 @@ cp "${CROSS_COMPILE_SYSROOT}/lib64/libc.so.6" "${OUTDIR}/rootfs/lib64/libc.so.6"
 
 # TODO: Make device nodes
 sudo mknod -m 666 ${OUTDIR}/rootfs/dev/null c 1 3
-sudo mknod -m 666 ${OUTDIR}/rootfs/dev/console c 5 1
+sudo mknod -m 600 ${OUTDIR}/rootfs/dev/console c 5 1
 
 # TODO: Clean and build the writer utility
 cd ${FINDER_APP_DIR}
