@@ -59,14 +59,10 @@ bool start_thread_obtaining_mutex(pthread_t *thread, pthread_mutex_t *mutex,int 
     if (rc != 0) 
     {
         printf("pthread_create failed with %d\n", rc);
+        free(thread_array);
+        return false;
     } 
    
-	if (thread_array->thread_complete_success)
-	{
-		//free(thread_array);
-		return true;
-	}
-	free(thread_array);
-	return false;
+	return true;
 }
 
