@@ -105,6 +105,12 @@ int main(int argc, char *argv[])
 
     freeaddrinfo(res);
     
+    if (listen(sockfd, 5) == -1)
+    {
+        syslog(LOG_ERR, "Could not listen: %s\n", strerror(errno));
+        return -1;
+    }
+    
     // fork here for daemon
     if (run_daemon)
     {
@@ -112,25 +118,25 @@ int main(int argc, char *argv[])
         if (pid < 0) { exit(EXIT_FAILURE); }
         if (pid > 0) { exit(EXIT_SUCCESS); }
 
-        setsid();
+        if (setsid() < 0) {exit(EXIT_FAILURE); }
 
         pid = fork();
         if (pid < 0) { exit(EXIT_FAILURE); }
         if (pid > 0) { exit(EXIT_SUCCESS); }
 
-        chdir("/");
-
         umask(0);
+        chdir("/");
 
         close(STDIN_FILENO);
         close(STDOUT_FILENO);
         close(STDERR_FILENO);
-    }
+        
+        int devnull = open("/dev/null", O_RDWR);
+        dup2(devnull, STDIN_FILENO);
+        dup2(devnull, STDOUT_FILENO);
+        dup2(devnull, STDERR_FILENO);
 
-    if (listen(sockfd, 5) == -1)
-    {
-        syslog(LOG_ERR, "Could not listen: %s\n", strerror(errno));
-        return -1;
+        if (devnull > 2) { close(devnull); }
     }
 
     while(keep_running)
@@ -140,6 +146,8 @@ int main(int argc, char *argv[])
 
         if (connectfd == -1)
         {
+            if (errno == EINTR && !keep_running) { break; }
+
             syslog(LOG_ERR, "Could not accept connection: %s\n", strerror(errno));
             continue;
         }
@@ -203,4 +211,6 @@ int main(int argc, char *argv[])
     close(fd);
     close(sockfd);
     remove(TMP_FILE);
+    
+    return 0;
 }
