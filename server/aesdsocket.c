@@ -239,11 +239,23 @@ int main(int argc, char *argv[])
         {
             if (temp->thread_info->is_complete)
             {
-                temp->next->prev = temp->prev;
-                temp->prev->next = temp->next;
+                struct Node *to_delete = temp;
                 temp = temp->next;
-                pthread_join(temp->prev->thread_info->thread_id, NULL);
-                free(temp->prev);
+
+                if (to_delete->prev)
+                {
+                    to_delete->prev->next = to_delete->next;
+                }
+                if (to_delete->next)
+                {
+                    to_delete->next->prev = to_delete->prev;
+                }
+                
+                pthread_join(to_delete->thread_info->thread_id, NULL);
+                free(to_delete->thread_info);
+                free(to_delete);
+            } else {
+                temp = temp->next;
             }
         }
 
@@ -253,12 +265,10 @@ int main(int argc, char *argv[])
             temp->prev->next = NULL;
             thread_list->tail = temp->prev;
             pthread_join(temp->thread_info->thread_id, NULL);
+            free(temp->thread_info);
             free(temp);
         }
-        // add accepted to linked list
-        //
-        // iterate over linked list and free + pthread_join all completed threads
-    }
+   }
 
     pthread_join(timestamp_thread, NULL);
 
