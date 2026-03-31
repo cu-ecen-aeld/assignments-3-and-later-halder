@@ -11,6 +11,8 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
+#include <time.h>
 
 #define PORT "9000"
 #define BUFFER_SIZE 1024
@@ -23,6 +25,18 @@ void signal_handler(int signal)
     keep_running = 0;
 }
 
+void *receive_write_echo(void *thread);
+pthread_mutex_t file_mutex;
+void *timestamp_log();
+
+struct thread_info_s 
+{
+    pthread_t thread_id;
+    int connected_fd;
+    char client_ip[INET6_ADDRSTRLEN];
+    int is_complete;
+};
+
 void *get_in_addr(struct sockaddr *sa)
 {
     if (sa->sa_family == AF_INET)
@@ -31,6 +45,57 @@ void *get_in_addr(struct sockaddr *sa)
     }
 
     return &(((struct sockaddr_in6 *)sa)->sin6_addr);
+}
+
+struct Node
+{
+    struct thread_info_s *thread_info;
+    struct Node *prev;
+    struct Node *next;
+};
+
+struct List
+{
+    int length;
+    struct Node *head;
+    struct Node *tail;
+};
+
+struct Node *node_init(struct thread_info_s *thread_info)
+{
+    struct Node *node;
+
+    if ((node = malloc(sizeof(struct Node))) == NULL)
+        return NULL;
+
+    node->thread_info = thread_info;
+    node->prev = NULL;
+    node->next = NULL;
+
+    return node;
+}
+
+struct List *list_init(struct Node *init_node)
+{
+    struct List *list;
+
+    if ((list = malloc(sizeof(struct List))) == NULL)
+        return NULL;
+    
+    list->head = init_node;
+    list->tail = init_node;
+    list->length = 1;
+    
+    return list;
+}
+
+void list_append(struct List *list, struct Node *node)
+{
+    node->prev = list->tail;
+    node->next = NULL;
+
+    list->tail->next = node;
+    list->tail = node;
 }
 
 int main(int argc, char *argv[])
@@ -59,8 +124,8 @@ int main(int argc, char *argv[])
     sigaction(SIGINT, &sa, NULL);
     sigaction(SIGTERM, &sa, NULL);
 
-    char *buffer;
-    int fd;
+    int mutex_return = pthread_mutex_init(&file_mutex, NULL);
+    if (mutex_return != 0) return -1;
 
     struct addrinfo hints;
     struct addrinfo *res, *rp;
@@ -69,7 +134,6 @@ int main(int argc, char *argv[])
     int yes = 1;
     int sockfd, connectfd;
     socklen_t addr_size;
-    char client_ip[INET6_ADDRSTRLEN];
 
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_UNSPEC;
@@ -139,6 +203,15 @@ int main(int argc, char *argv[])
         if (devnull > 2) { close(devnull); }
     }
 
+    pthread_t timestamp_thread;
+    pthread_create(&timestamp_thread, NULL, &timestamp_log, NULL);
+    
+    struct List *thread_list;
+    struct Node *head_dummy;
+
+    head_dummy = node_init(NULL);
+    thread_list = list_init(head_dummy);
+
     while(keep_running)
     {
         addr_size = sizeof(client_addr);
@@ -152,65 +225,124 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), client_ip, sizeof(client_ip));
-        syslog(LOG_INFO, "Accepted connection from %s", client_ip);
+        struct thread_info_s *accepted = malloc(sizeof(struct thread_info_s));
+        accepted->connected_fd = connectfd;
+        inet_ntop(client_addr.ss_family, get_in_addr((struct sockaddr *)&client_addr), accepted->client_ip, sizeof(accepted->client_ip));
+        syslog(LOG_INFO, "Accepted connection from %s", accepted->client_ip);
+        accepted->is_complete = 0;
 
-        buffer = malloc(BUFFER_SIZE);
-        memset(buffer, 0, BUFFER_SIZE);
-
-        fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
-        if (fd == -1)
+        pthread_create(&accepted->thread_id, NULL, &receive_write_echo, accepted);
+        list_append(thread_list, node_init(accepted));    
+        
+        struct Node *temp = thread_list->head->next;
+        while (temp != thread_list->tail)
         {
-            syslog(LOG_ERR, "Could not open or create file: %s\n", strerror(errno));
-            return -1;
-        } else { syslog(LOG_INFO, "Opened or created file %s\n", TMP_FILE); }
-
-        ssize_t bytes_received;
-        int packet_complete = 0;
-
-        while (!packet_complete && (bytes_received = recv(connectfd, buffer, BUFFER_SIZE, 0)) > 0)
-        {
-            char *newline_at = memchr(buffer, '\n', bytes_received);
-            
-            if (newline_at != NULL)
+            if (temp->thread_info->is_complete)
             {
-                size_t to_write = newline_at - buffer + 1;
-                write(fd, buffer, to_write);
-                packet_complete = 1;
-            } else {
-                write(fd, buffer, bytes_received);
+                temp->next->prev = temp->prev;
+                temp->prev->next = temp->next;
+                temp = temp->next;
+                pthread_join(temp->prev->thread_info->thread_id, NULL);
+                free(temp->prev);
             }
         }
 
-        if (bytes_received == -1)
+        // temp is thread_list tail
+        if (temp->thread_info->is_complete)
         {
-            syslog(LOG_ERR, "Could not receive bytes: %s\n", strerror(errno));
+            temp->prev->next = NULL;
+            thread_list->tail = temp->prev;
+            pthread_join(temp->thread_info->thread_id, NULL);
+            free(temp);
         }
-        
-        close(fd);
-        memset(buffer, 0, BUFFER_SIZE);
-        
-        fd = open(TMP_FILE, O_RDONLY);
-        if (fd == -1)
-        {
-            syslog(LOG_ERR, "Could not open or create file: %s\n", strerror(errno));
-            return -1;
-        } else { syslog(LOG_INFO, "Opened file %s again\n", TMP_FILE); }
-        
-        while ((bytes_received = read(fd, buffer, BUFFER_SIZE)) > 0)
-        {
-            send(connectfd, buffer, bytes_received, 0);
-        }
-        
-        close(fd);
-        free(buffer);
-        close(connectfd);
-        syslog(LOG_INFO, "Closed connection from %s\n", client_ip);
+        // add accepted to linked list
+        //
+        // iterate over linked list and free + pthread_join all completed threads
     }
 
-    close(fd);
+    pthread_join(timestamp_thread, NULL);
+
     close(sockfd);
     remove(TMP_FILE);
+    pthread_mutex_destroy(&file_mutex);
     
+    free(head_dummy);
+    free(thread_list);
+
     return 0;
+}
+
+void *receive_write_echo(void *thread_s)
+{
+    struct thread_info_s *thread_info = (struct thread_info_s *) thread_s;
+    char *buffer = malloc(BUFFER_SIZE);
+    memset(buffer, 0, BUFFER_SIZE);
+
+    ssize_t bytes_received;
+    int packet_complete = 0;
+    
+    int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664); 
+
+    while (!packet_complete && (bytes_received = recv(thread_info->connected_fd, buffer, BUFFER_SIZE, 0)) > 0)
+    {
+        char *newline_at = memchr(buffer, '\n', bytes_received);
+
+        if (newline_at != NULL)
+        {
+            size_t to_write = newline_at - buffer + 1;
+            pthread_mutex_lock(&file_mutex);
+            write(fd, buffer, to_write);
+            packet_complete = 1;
+        } else {
+            pthread_mutex_lock(&file_mutex);
+            write(fd, buffer, bytes_received);
+        } 
+    }
+
+    if (bytes_received == -1)
+        syslog(LOG_ERR, "Could not receive bytes: %s\n", strerror(errno));
+    
+    close(fd);
+    memset(buffer, 0, BUFFER_SIZE);
+
+    fd = open(TMP_FILE, O_RDONLY);
+
+    while ((bytes_received = read(fd, buffer, BUFFER_SIZE)) > 0)
+    {
+        send(thread_info->connected_fd, buffer, bytes_received, 0);
+    }
+    
+    close(fd);
+    pthread_mutex_unlock(&file_mutex);
+    free(buffer);
+    close(thread_info->connected_fd);
+    syslog(LOG_INFO, "Closed connection from %s\n", thread_info->client_ip);
+    thread_info->is_complete = 1;
+    
+    return NULL;
+}
+
+void *timestamp_log()
+{
+    while (keep_running) 
+    {
+        sleep(10);
+
+        time_t current_time;
+        char timestamp[256];
+
+        time(&current_time);
+        
+        struct tm *tm = localtime(&current_time);
+        strftime(timestamp, 256, "timestamp:%x@%H:%M:%S\n", tm);
+        
+        pthread_mutex_lock(&file_mutex);
+        int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+        write(fd, timestamp, 256);
+        close(fd);
+        pthread_mutex_unlock(&file_mutex);
+
+   }
+
+    return NULL;
 }
