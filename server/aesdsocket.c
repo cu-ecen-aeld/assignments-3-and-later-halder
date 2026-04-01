@@ -371,7 +371,7 @@ void *timestamp_log()
         
         pthread_mutex_lock(&file_mutex);
         int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
-        write(fd, timestamp, 256);
+        write(fd, timestamp, strlen(timestamp));
         close(fd);
         pthread_mutex_unlock(&file_mutex);
 
