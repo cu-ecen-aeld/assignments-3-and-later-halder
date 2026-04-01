@@ -164,6 +164,7 @@ int main(int argc, char *argv[])
     if (rp == NULL)
     {
         syslog(LOG_ERR, "Could not bind: %s\n", strerror(errno));
+        freeaddrinfo(res);
         return -1;
     }
 
