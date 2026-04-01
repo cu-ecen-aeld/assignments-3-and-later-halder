@@ -251,7 +251,8 @@ int main(int argc, char *argv[])
                 {
                     to_delete->next->prev = to_delete->prev;
                 }
-                
+
+                shutdown(to_delete->thread_info->connected_fd, SHUT_RDWR);
                 pthread_join(to_delete->thread_info->thread_id, NULL);
                 free(to_delete->thread_info);
                 free(to_delete);
@@ -265,14 +266,30 @@ int main(int argc, char *argv[])
         {
             temp->prev->next = NULL;
             thread_list->tail = temp->prev;
+            shutdown(temp->thread_info->connected_fd, SHUT_RDWR);
             pthread_join(temp->thread_info->thread_id, NULL);
             free(temp->thread_info);
             free(temp);
         }
    }
 
+    // final clean up loop
+    struct Node *temp = thread_list->head->next;
+    while (temp != NULL)
+    {
+        struct Node *to_delete = temp;
+        temp = temp->next;
+    
+        shutdown(to_delete->thread_info->connected_fd, SHUT_RDWR);
+        pthread_join(to_delete->thread_info->thread_id, NULL);
+    
+        free(to_delete->thread_info);
+        free(to_delete);
+    }
+    
     pthread_join(timestamp_thread, NULL);
 
+    shutdown(sockfd, SHUT_RDWR);
     close(sockfd);
     remove(TMP_FILE);
     pthread_mutex_destroy(&file_mutex);
@@ -303,10 +320,12 @@ void *receive_write_echo(void *thread_s)
             size_t to_write = newline_at - buffer + 1;
             pthread_mutex_lock(&file_mutex);
             write(fd, buffer, to_write);
+            pthread_mutex_unlock(&file_mutex);
             packet_complete = 1;
         } else {
             pthread_mutex_lock(&file_mutex);
             write(fd, buffer, bytes_received);
+            pthread_mutex_unlock(&file_mutex);
         } 
     }
 
@@ -316,6 +335,7 @@ void *receive_write_echo(void *thread_s)
     close(fd);
     memset(buffer, 0, BUFFER_SIZE);
 
+    pthread_mutex_lock(&file_mutex);
     fd = open(TMP_FILE, O_RDONLY);
 
     while ((bytes_received = read(fd, buffer, BUFFER_SIZE)) > 0)
@@ -325,7 +345,9 @@ void *receive_write_echo(void *thread_s)
     
     close(fd);
     pthread_mutex_unlock(&file_mutex);
+    
     free(buffer);
+    shutdown(thread_info->connected_fd, SHUT_RDWR);
     close(thread_info->connected_fd);
     syslog(LOG_INFO, "Closed connection from %s\n", thread_info->client_ip);
     thread_info->is_complete = 1;
