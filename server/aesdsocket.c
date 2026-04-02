@@ -379,7 +379,7 @@ void *timestamp_log()
         time(&current_time);
         
         struct tm *tm = localtime(&current_time);
-        strftime(timestamp, 256, "timestamp:%x@%H:%M:%S\n", tm);
+        strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z%n", tm);
         
         pthread_mutex_lock(&file_mutex);
         write(aesd_fd, timestamp, strlen(timestamp));
