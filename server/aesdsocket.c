@@ -26,6 +26,7 @@ void signal_handler(int signal)
 }
 
 void *receive_write_echo(void *thread);
+int aesd_fd;
 pthread_mutex_t file_mutex;
 void *timestamp_log();
 
@@ -204,6 +205,14 @@ int main(int argc, char *argv[])
         if (devnull > 2) { close(devnull); }
     }
 
+    aesd_fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+    if (aesd_fd == -1)
+    {
+        syslog(LOG_ERR, "Could not open file: %s\n", strerror(errno));
+        return -1;
+    }
+    
+    // int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
     pthread_t timestamp_thread;
     pthread_create(&timestamp_thread, NULL, &timestamp_log, NULL);
     
@@ -235,62 +244,64 @@ int main(int argc, char *argv[])
         pthread_create(&accepted->thread_id, NULL, &receive_write_echo, accepted);
         list_append(thread_list, node_init(accepted));    
         
-        struct Node *temp = thread_list->head->next;
-        while (temp != thread_list->tail)
+        struct Node *current = thread_list->head->next;
+        while (current != NULL)
         {
-            if (temp->thread_info->is_complete)
+            if (current->thread_info->is_complete)
             {
-                struct Node *to_delete = temp;
-                temp = temp->next;
-
-                if (to_delete->prev)
+                struct Node *next = current->next;
+        
+                // unlink node safely
+                if (current->prev != NULL)
                 {
-                    to_delete->prev->next = to_delete->next;
+                    current->prev->next = current->next;
                 }
-                if (to_delete->next)
+        
+                if (current->next != NULL)
                 {
-                    to_delete->next->prev = to_delete->prev;
+                    current->next->prev = current->prev;
                 }
-
-                shutdown(to_delete->thread_info->connected_fd, SHUT_RDWR);
-                pthread_join(to_delete->thread_info->thread_id, NULL);
-                free(to_delete->thread_info);
-                free(to_delete);
+        
+                // update tail if needed
+                if (thread_list->tail == current)
+                {
+                    thread_list->tail = current->prev;
+                }
+        
+                // clean up thread
+                pthread_join(current->thread_info->thread_id, NULL);
+                
+                free(current->thread_info);
+                free(current);
+        
+                current = next;
             } else {
-                temp = temp->next;
+                current = current->next;
             }
-        }
-
-        // temp is thread_list tail
-        if (temp->thread_info->is_complete)
-        {
-            temp->prev->next = NULL;
-            thread_list->tail = temp->prev;
-            shutdown(temp->thread_info->connected_fd, SHUT_RDWR);
-            pthread_join(temp->thread_info->thread_id, NULL);
-            free(temp->thread_info);
-            free(temp);
         }
    }
 
-    // final clean up loop
-    struct Node *temp = thread_list->head->next;
-    while (temp != NULL)
+    // final clean up loop (for interrupt; any unfinished threads)
+    struct Node *current = thread_list->head->next;
+    while (current != NULL)
     {
-        struct Node *to_delete = temp;
-        temp = temp->next;
+        struct Node *next = current->next;
     
-        shutdown(to_delete->thread_info->connected_fd, SHUT_RDWR);
-        pthread_join(to_delete->thread_info->thread_id, NULL);
+        shutdown(current->thread_info->connected_fd, SHUT_RDWR);
+        pthread_join(current->thread_info->thread_id, NULL);
+
+        close(current->thread_info->connected_fd);
+        free(current->thread_info);
+        free(current);
     
-        free(to_delete->thread_info);
-        free(to_delete);
+        current = next;
     }
     
     pthread_join(timestamp_thread, NULL);
 
     shutdown(sockfd, SHUT_RDWR);
     close(sockfd);
+    close(aesd_fd);
     remove(TMP_FILE);
     pthread_mutex_destroy(&file_mutex);
     
@@ -304,47 +315,42 @@ void *receive_write_echo(void *thread_s)
 {
     struct thread_info_s *thread_info = (struct thread_info_s *) thread_s;
     char *buffer = malloc(BUFFER_SIZE);
+    if (buffer == NULL)
+    {
+        syslog(LOG_ERR, "Failed to allocate buffer: %s", strerror(errno));
+        return NULL;
+    }
     memset(buffer, 0, BUFFER_SIZE);
 
     ssize_t bytes_received;
-    int packet_complete = 0;
+    ssize_t read_line_count;
     
-    int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664); 
-
-    while (!packet_complete && (bytes_received = recv(thread_info->connected_fd, buffer, BUFFER_SIZE, 0)) > 0)
+    while ((bytes_received = recv(thread_info->connected_fd, buffer, BUFFER_SIZE, 0)) > 0)
     {
         char *newline_at = memchr(buffer, '\n', bytes_received);
 
+        pthread_mutex_lock(&file_mutex);
         if (newline_at != NULL)
         {
             size_t to_write = newline_at - buffer + 1;
-            pthread_mutex_lock(&file_mutex);
-            write(fd, buffer, to_write);
-            pthread_mutex_unlock(&file_mutex);
-            packet_complete = 1;
+            write(aesd_fd, buffer, to_write);
         } else {
-            pthread_mutex_lock(&file_mutex);
-            write(fd, buffer, bytes_received);
-            pthread_mutex_unlock(&file_mutex);
-        } 
+            write(aesd_fd, buffer, bytes_received);
+        }
+
+        if (newline_at != NULL)
+        {
+            lseek(aesd_fd, 0, SEEK_SET);
+            while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0)
+            {
+                send(thread_info->connected_fd, buffer, read_line_count, 0);
+            }
+        }
+        pthread_mutex_unlock(&file_mutex);
     }
 
     if (bytes_received == -1)
         syslog(LOG_ERR, "Could not receive bytes: %s\n", strerror(errno));
-    
-    close(fd);
-    memset(buffer, 0, BUFFER_SIZE);
-
-    pthread_mutex_lock(&file_mutex);
-    fd = open(TMP_FILE, O_RDONLY);
-
-    while ((bytes_received = read(fd, buffer, BUFFER_SIZE)) > 0)
-    {
-        send(thread_info->connected_fd, buffer, bytes_received, 0);
-    }
-    
-    close(fd);
-    pthread_mutex_unlock(&file_mutex);
     
     free(buffer);
     shutdown(thread_info->connected_fd, SHUT_RDWR);
@@ -359,7 +365,13 @@ void *timestamp_log()
 {
     while (keep_running) 
     {
-        sleep(10);
+        for (int i = 0; i < 10 && keep_running; i++)
+        {
+            sleep(1);
+        }
+
+        if (!keep_running)
+            break;
 
         time_t current_time;
         char timestamp[256];
@@ -370,11 +382,8 @@ void *timestamp_log()
         strftime(timestamp, 256, "timestamp:%x@%H:%M:%S\n", tm);
         
         pthread_mutex_lock(&file_mutex);
-        int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
-        write(fd, timestamp, strlen(timestamp));
-        close(fd);
+        write(aesd_fd, timestamp, strlen(timestamp));
         pthread_mutex_unlock(&file_mutex);
-
    }
 
     return NULL;
