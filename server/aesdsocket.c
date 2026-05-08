@@ -16,7 +16,14 @@
 
 #define PORT "9000"
 #define BUFFER_SIZE 1024
-#define TMP_FILE "/var/tmp/aesdsocketdata"
+#ifndef USE_AESD_CHAR_DEVICE
+#define USE_AESD_CHAR_DEVICE 1
+#endif
+#if USE_AESD_CHAR_DEVICE
+#define DATA_FILE "/dev/aesdchar"
+#else
+#define DATA_FILE "/var/tmp/aesdsocketdata"
+#endif
 
 volatile sig_atomic_t keep_running = 1;
 
@@ -26,9 +33,11 @@ void signal_handler(int signal)
 }
 
 void *receive_write_echo(void *thread);
-int aesd_fd;
+int aesd_fd = -1;
 pthread_mutex_t file_mutex;
+#if !USE_AESD_CHAR_DEVICE
 void *timestamp_log();
+#endif
 
 struct thread_info_s 
 {
@@ -205,22 +214,17 @@ int main(int argc, char *argv[])
         if (devnull > 2) { close(devnull); }
     }
 
-    aesd_fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
-    if (aesd_fd == -1)
-    {
-        syslog(LOG_ERR, "Could not open file: %s\n", strerror(errno));
-        return -1;
-    }
-    
-    // int fd = open(TMP_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
-    pthread_t timestamp_thread;
-    pthread_create(&timestamp_thread, NULL, &timestamp_log, NULL);
-    
     struct List *thread_list;
     struct Node *head_dummy;
+#if !USE_AESD_CHAR_DEVICE
+    pthread_t timestamp_thread;
+#endif
 
     head_dummy = node_init(NULL);
     thread_list = list_init(head_dummy);
+#if !USE_AESD_CHAR_DEVICE
+    pthread_create(&timestamp_thread, NULL, &timestamp_log, NULL);
+#endif
 
     while(keep_running)
     {
@@ -296,13 +300,18 @@ int main(int argc, char *argv[])
     
         current = next;
     }
-    
+
+#if !USE_AESD_CHAR_DEVICE
     pthread_join(timestamp_thread, NULL);
+#endif
 
     shutdown(sockfd, SHUT_RDWR);
     close(sockfd);
-    close(aesd_fd);
-    remove(TMP_FILE);
+    if (aesd_fd != -1)
+        close(aesd_fd);
+#if !USE_AESD_CHAR_DEVICE
+    remove(DATA_FILE);
+#endif
     pthread_mutex_destroy(&file_mutex);
     
     free(head_dummy);
@@ -330,22 +339,37 @@ void *receive_write_echo(void *thread_s)
         char *newline_at = memchr(buffer, '\n', bytes_received);
 
         pthread_mutex_lock(&file_mutex);
-        if (newline_at != NULL)
-        {
-            size_t to_write = newline_at - buffer + 1;
-            write(aesd_fd, buffer, to_write);
-        } else {
-            write(aesd_fd, buffer, bytes_received);
-        }
-
-        if (newline_at != NULL)
-        {
-            lseek(aesd_fd, 0, SEEK_SET);
-            while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0)
-            {
-                send(thread_info->connected_fd, buffer, read_line_count, 0);
+        if (aesd_fd == -1) {
+#if USE_AESD_CHAR_DEVICE
+            aesd_fd = open(DATA_FILE, O_RDWR, 0664);
+#else
+            aesd_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+#endif
+            if (aesd_fd == -1) {
+                syslog(LOG_ERR, "Could not open %s: %s\n", DATA_FILE, strerror(errno));
+                pthread_mutex_unlock(&file_mutex);
+                break;
             }
         }
+
+        if (newline_at != NULL) {
+            size_t to_write = newline_at - buffer + 1;
+            if (write(aesd_fd, buffer, to_write) == -1) {
+                syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
+            } else {
+                lseek(aesd_fd, 0, SEEK_SET);
+                while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0) {
+                    if (send(thread_info->connected_fd, buffer, read_line_count, 0) == -1) {
+                        syslog(LOG_ERR, "Send failed: %s\n", strerror(errno));
+                        break;
+                    }
+                }
+            }
+        } else {
+            if (write(aesd_fd, buffer, bytes_received) == -1)
+                syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
+        }
+
         pthread_mutex_unlock(&file_mutex);
     }
 
@@ -361,30 +385,36 @@ void *receive_write_echo(void *thread_s)
     return NULL;
 }
 
+#if !USE_AESD_CHAR_DEVICE
 void *timestamp_log()
 {
-    while (keep_running) 
+    while (keep_running)
     {
         for (int i = 0; i < 10 && keep_running; i++)
-        {
             sleep(1);
-        }
 
         if (!keep_running)
             break;
 
         time_t current_time;
         char timestamp[256];
+        struct tm *tm;
 
         time(&current_time);
-        
-        struct tm *tm = localtime(&current_time);
-        strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z%n", tm);
-        
-        pthread_mutex_lock(&file_mutex);
-        write(aesd_fd, timestamp, strlen(timestamp));
-        pthread_mutex_unlock(&file_mutex);
-   }
+        tm = localtime(&current_time);
+        if (tm == NULL)
+            continue;
 
+        strftime(timestamp, sizeof(timestamp), "timestamp:%a, %d %b %Y %T %z\n", tm);
+
+        pthread_mutex_lock(&file_mutex);
+        if (aesd_fd == -1)
+            aesd_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+        if (aesd_fd != -1)
+            write(aesd_fd, timestamp, strlen(timestamp));
+        pthread_mutex_unlock(&file_mutex);
+    }
     return NULL;
 }
+#endif
+
