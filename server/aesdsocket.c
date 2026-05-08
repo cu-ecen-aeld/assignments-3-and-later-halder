@@ -337,6 +337,8 @@ void *receive_write_echo(void *thread_s)
     while ((bytes_received = recv(thread_info->connected_fd, buffer, BUFFER_SIZE, 0)) > 0)
     {
         char *newline_at = memchr(buffer, '\n', bytes_received);
+        size_t total_written = 0;
+        ssize_t bytes_written;
 
         pthread_mutex_lock(&file_mutex);
         if (aesd_fd == -1) {
@@ -352,22 +354,23 @@ void *receive_write_echo(void *thread_s)
             }
         }
 
-        if (newline_at != NULL) {
-            size_t to_write = newline_at - buffer + 1;
-            if (write(aesd_fd, buffer, to_write) == -1) {
+        while (total_written < (size_t)bytes_received) {
+            bytes_written = write(aesd_fd, buffer + total_written, bytes_received - total_written);
+            if (bytes_written == -1) {
                 syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
-            } else {
-                lseek(aesd_fd, 0, SEEK_SET);
-                while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0) {
-                    if (send(thread_info->connected_fd, buffer, read_line_count, 0) == -1) {
-                        syslog(LOG_ERR, "Send failed: %s\n", strerror(errno));
-                        break;
-                    }
+                break;
+            }
+            total_written += bytes_written;
+        }
+
+        if (newline_at != NULL && total_written == (size_t)bytes_received) {
+            lseek(aesd_fd, 0, SEEK_SET);
+            while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0) {
+                if (send(thread_info->connected_fd, buffer, read_line_count, 0) == -1) {
+                    syslog(LOG_ERR, "Send failed: %s\n", strerror(errno));
+                    break;
                 }
             }
-        } else {
-            if (write(aesd_fd, buffer, bytes_received) == -1)
-                syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
         }
 
         pthread_mutex_unlock(&file_mutex);
