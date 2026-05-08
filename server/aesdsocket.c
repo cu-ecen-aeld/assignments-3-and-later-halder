@@ -364,7 +364,19 @@ void *receive_write_echo(void *thread_s)
         }
 
         if (newline_at != NULL && total_written == (size_t)bytes_received) {
-            lseek(aesd_fd, 0, SEEK_SET);
+            if (lseek(aesd_fd, 0, SEEK_SET) == (off_t)-1) {
+                close(aesd_fd);
+#if USE_AESD_CHAR_DEVICE
+                aesd_fd = open(DATA_FILE, O_RDWR, 0664);
+#else
+                aesd_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+#endif
+                if (aesd_fd == -1) {
+                    syslog(LOG_ERR, "Could not reopen %s: %s\n", DATA_FILE, strerror(errno));
+                    pthread_mutex_unlock(&file_mutex);
+                    break;
+                }
+            }
             while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0) {
                 if (send(thread_info->connected_fd, buffer, read_line_count, 0) == -1) {
                     syslog(LOG_ERR, "Send failed: %s\n", strerror(errno));
