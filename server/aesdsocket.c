@@ -14,6 +14,8 @@
 #include <pthread.h>
 #include <time.h>
 
+#include "../aesd-char-driver/aesd_ioctl.h"
+
 #define PORT "9000"
 #define BUFFER_SIZE 1024
 #ifndef USE_AESD_CHAR_DEVICE
@@ -355,6 +357,14 @@ void *receive_write_echo(void *thread_s)
         }
 
         while (total_written < (size_t)bytes_received) {
+#if USE_AESD_CHAR_DEVICE
+            struct aesd_seekto seekto;
+            if (sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u\n", &seekto.write_cmd, &seekto.write_cmd_offset) == 2)
+            {
+                if (ioctl(aesd_fd, AESDCHAR_IOCSEEKTO, &seekto) != 0)
+                    syslog(LOG_ERR, "Could not ioctl seekto: %s", strerror(errno));
+            }
+#endif
             bytes_written = write(aesd_fd, buffer + total_written, bytes_received - total_written);
             if (bytes_written == -1) {
                 syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
