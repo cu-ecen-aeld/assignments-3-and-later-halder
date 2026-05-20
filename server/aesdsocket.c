@@ -342,6 +342,11 @@ void *receive_write_echo(void *thread_s)
         size_t total_written = 0;
         ssize_t bytes_written;
 
+        int is_seek_cmd = 0;
+#if USE_AESD_CHAR_DEVICE
+        struct aesd_seekto seekto;
+#endif
+
         pthread_mutex_lock(&file_mutex);
         if (aesd_fd == -1) {
 #if USE_AESD_CHAR_DEVICE
@@ -356,35 +361,41 @@ void *receive_write_echo(void *thread_s)
             }
         }
 
-        while (total_written < (size_t)bytes_received) {
 #if USE_AESD_CHAR_DEVICE
-            struct aesd_seekto seekto;
-            if (sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u\n", &seekto.write_cmd, &seekto.write_cmd_offset) == 2)
-            {
-                if (ioctl(aesd_fd, AESDCHAR_IOCSEEKTO, &seekto) != 0)
-                    syslog(LOG_ERR, "Could not ioctl seekto: %s", strerror(errno));
-            }
+        if (sscanf(buffer, "AESDCHAR_IOCSEEKTO:%u,%u\n", &seekto.write_cmd, &seekto.write_cmd_offset) == 2) {
+            if (ioctl(aesd_fd, AESDCHAR_IOCSEEKTO, &seekto) != 0)
+                syslog(LOG_ERR, "Could not ioctl seekto: %s", strerror(errno));
+            is_seek_cmd = 1;
+        }
 #endif
-            bytes_written = write(aesd_fd, buffer + total_written, bytes_received - total_written);
-            if (bytes_written == -1) {
-                syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
-                break;
+
+        if (!is_seek_cmd) {
+            while (total_written < (size_t)bytes_received) {
+                bytes_written = write(aesd_fd, buffer + total_written, bytes_received - total_written);
+                if (bytes_written == -1) {
+                    syslog(LOG_ERR, "Write failed: %s\n", strerror(errno));
+                    break;
+                }
+                total_written += bytes_written;
             }
-            total_written += bytes_written;
+        } else {
+            total_written = (size_t)bytes_received;
         }
 
         if (newline_at != NULL && total_written == (size_t)bytes_received) {
-            if (lseek(aesd_fd, 0, SEEK_SET) == (off_t)-1) {
-                close(aesd_fd);
+            if (!is_seek_cmd) {
+                if (lseek(aesd_fd, 0, SEEK_SET) == (off_t)-1) {
+                    close(aesd_fd);
 #if USE_AESD_CHAR_DEVICE
-                aesd_fd = open(DATA_FILE, O_RDWR, 0664);
+                    aesd_fd = open(DATA_FILE, O_RDWR, 0664);
 #else
-                aesd_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
+                    aesd_fd = open(DATA_FILE, O_RDWR | O_CREAT | O_APPEND, 0664);
 #endif
-                if (aesd_fd == -1) {
-                    syslog(LOG_ERR, "Could not reopen %s: %s\n", DATA_FILE, strerror(errno));
-                    pthread_mutex_unlock(&file_mutex);
-                    break;
+                    if (aesd_fd == -1) {
+                        syslog(LOG_ERR, "Could not reopen %s: %s\n", DATA_FILE, strerror(errno));
+                        pthread_mutex_unlock(&file_mutex);
+                        break;
+                    }
                 }
             }
             while ((read_line_count = read(aesd_fd, buffer, BUFFER_SIZE)) > 0) {
